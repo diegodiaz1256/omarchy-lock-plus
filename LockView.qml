@@ -176,13 +176,59 @@ Item {
       onPositionChanged: root.wakeRequested()
     }
 
+    Rectangle {
+      id: toast
+
+      // A password failure outranks a scanner message: the user typed it, so
+      // it is the more urgent thing to answer.
+      readonly property string message:
+        root.failureMessage.length > 0 ? root.failureMessage : root.fingerprintMessage
+      readonly property bool isError:
+        root.failureMessage.length > 0 || root.fingerprintRejected
+
+      width: Math.min(toastLabel.implicitWidth + 34, root.width - 80)
+      height: toastLabel.implicitHeight + 20
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.bottom: inputField.top
+      anchors.bottomMargin: 20
+      radius: Style.cornerRadius
+      color: Color.lock.background
+      border.width: 1
+      border.color: isError ? Color.lock.textError : Color.lock.border
+
+      visible: root.showInterface && opacity > 0
+      opacity: message.length > 0 ? 1 : 0
+      Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+
+      // Rises into place, so a new message is noticed even when one was
+      // already showing.
+      transform: Translate {
+        y: toast.opacity > 0 ? 0 : 6
+        Behavior on y { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
+      }
+
+      Text {
+        id: toastLabel
+        anchors.centerIn: parent
+        width: Math.min(implicitWidth, root.width - 114)
+        text: toast.message
+        color: toast.isError ? Color.lock.textError : Color.lock.text
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+        maximumLineCount: 2
+        elide: Text.ElideRight
+      }
+    }
+
     Item {
       id: faceIndicator
       width: 96
       height: 96
       anchors.horizontalCenter: parent.horizontalCenter
-      anchors.bottom: inputField.top
-      anchors.bottomMargin: 34
+      anchors.bottom: toast.top
+      anchors.bottomMargin: 18
       visible: root.showInterface && (opacity > 0)
       opacity: root.faceScanning ? 1 : 0
       Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutQuad } }
@@ -320,16 +366,11 @@ Item {
 
       Text {
         anchors.fill: passwordInput
-        text: root.authenticatingPassword ? "Checking…"
-            : (root.failureMessage.length > 0 ? root.failureMessage
-            : (root.fingerprintMessage.length > 0 ? root.fingerprintMessage : root.placeholderText))
+        text: root.authenticatingPassword ? "Checking…" : root.placeholderText
         visible: passwordInput.text.length === 0
-        color: root.authenticatingPassword ? Color.lock.text
-            : ((root.failureMessage.length > 0 || root.fingerprintRejected) ? Color.lock.textError
-            : Color.lock.placeholder)
+        color: root.authenticatingPassword ? Color.lock.text : Color.lock.placeholder
         font.family: Style.font.family
         font.pixelSize: root.fieldFontSize
-        font.italic: !root.authenticatingPassword && root.failureMessage.length > 0
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight

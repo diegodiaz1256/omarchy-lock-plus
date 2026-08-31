@@ -162,6 +162,7 @@ Item {
     fingerprintMessage = ""
     fingerprintRejected = false
     fingerprintRejectTimer.stop()
+    failureClearTimer.stop()
     authenticatingPassword = false
     fingerprintAuthenticating = false
     fingerprintRetryTimer.stop()
@@ -265,6 +266,7 @@ Item {
     pendingPassword = ""
     failedAttempts += 1
     failureMessage = "Authentication failed (" + failedAttempts + ")"
+    failureClearTimer.restart()
     runWake()
   }
 
@@ -478,6 +480,7 @@ Item {
       var text = String(fingerprintPam.message || "").trim()
       if (text.length === 0) return
       root.fingerprintMessage = text
+      fingerprintMessageTimer.restart()
       if (fingerprintPam.messageIsError) {
         root.fingerprintRejected = true
         fingerprintRejectTimer.restart()
@@ -552,10 +555,26 @@ Item {
   }
 
   Timer {
+    id: failureClearTimer
+    interval: 4000
+    repeat: false
+    onTriggered: root.failureMessage = ""
+  }
+
+  Timer {
     id: fingerprintRejectTimer
     interval: 1200
     repeat: false
     onTriggered: root.fingerprintRejected = false
+  }
+
+  // Clear a scanner message once it has been read, so the toast does not sit
+  // there after the reader has moved on.
+  Timer {
+    id: fingerprintMessageTimer
+    interval: 3500
+    repeat: false
+    onTriggered: root.fingerprintMessage = ""
   }
 
   Timer {
