@@ -22,7 +22,9 @@ in flight when suspend hits, so nothing gets wedged.
 
 **Idle face** — a large clock with date, weather, battery and network, on a
 sharp background. Press any key (or click) and it hands over to the password
-field; Escape brings it back.
+field; Escape brings it back. By default it appears on the built-in laptop
+panel (the focused screen when the lid is shut); the settings panel can put it
+on the focused screen or on every screen instead.
 
 **Unlock** — fingerprint and face both start on that first keypress, whichever
 answers first. Face unlock is optional and needs a one-time setup; see below.
@@ -96,6 +98,12 @@ new privileges, IR camera only.
 It does not make howdy's matcher safe, only contained. Fingerprint is the
 stronger factor; if you have a working reader you probably do not need this.
 
+Face unlock depends on ambient infrared, so a dark room can fail with every
+frame below howdy's `dark_threshold`. When that happens the lock screen says
+"Camera sees nothing — is it covered?" rather than failing silently: a closed
+privacy shutter and an unlit room are indistinguishable from software, so it
+offers the shutter as a possibility rather than a diagnosis.
+
 ### Fingerprint reader recovery
 
 A workaround for a driver bug, not a feature. `libfprint-egismoc` asserts and
@@ -127,6 +135,7 @@ Stored in `~/.config/omarchy/lockface.json`, written by the panel:
 | `showDate` `showWeather` `showBattery` `showNetwork` `showHint` | Idle face elements |
 | `fingerprintEnabled` `faceEnabled` | Unlock methods |
 | `armOnInput` | Wait for a keypress before scanning (recommended) |
+| `lockDisplay` | `internal` (laptop panel), `focused`, or `all` |
 
 `armOnInput` is the setting that avoids the suspend problem above. Turning it
 off restores the stock behaviour of scanning the moment the screen locks.

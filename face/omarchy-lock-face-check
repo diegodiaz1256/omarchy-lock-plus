@@ -5,7 +5,9 @@ omarchy-lock-face-check — ask the face daemon about the user running this.
 Runs entirely unprivileged. It sends nothing: the daemon reads the caller's
 identity from the kernel (SO_PEERCRED), so this cannot ask about anyone else.
 
-Exit 0 on a match, 1 otherwise. PAM reads only that status.
+Exit 0 on a match, 2 when the camera saw nothing (covered lens or a dark
+room), 1 otherwise. PAM treats anything non-zero as a failure; the lock screen
+uses 2 to explain itself.
 """
 
 import socket
@@ -26,7 +28,11 @@ def main():
         # No daemon, no camera, no answer: fall through to the next method.
         return 1
 
-    return 0 if reply == b"Y" else 1
+    if reply == b"Y":
+        return 0
+    if reply == b"D":
+        return 2
+    return 1
 
 
 if __name__ == "__main__":

@@ -35,7 +35,12 @@ RestrictAddressFamilies=AF_UNIX
 PrivateNetwork=true
 
 # The IR camera, and nothing else.
-PrivateDevices=yes
+#
+# PrivateDevices=yes is deliberately NOT used: it replaces /dev with a minimal
+# tree that omits /dev/v4l, which is where howdy's configured device_path
+# points, so the camera cannot be opened at all. DeviceAllow still confines
+# this service to video4linux nodes.
+DevicePolicy=closed
 DeviceAllow=char-video4linux rw
 
 # howdy reads its models and config from here, and writes failure snapshots.

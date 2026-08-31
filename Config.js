@@ -10,6 +10,11 @@ var DEFAULTS = {
   showBattery: true,
   showNetwork: true,
   showHint: true,
+  // Which display carries the lock interface:
+  //   "internal" — the laptop panel when the lid is open, else the focused one
+  //   "focused"  — whichever screen was focused when locking
+  //   "all"      — every screen, as the stock lock screen does
+  lockDisplay: "internal",
   // Auth methods. Fingerprint and face are only offered when the system is
   // actually set up for them; these toggles gate the lock screen's use of
   // what exists, they do not enroll anything.
@@ -33,6 +38,8 @@ function normalize(raw) {
   if (typeof raw.showBattery === "boolean") out.showBattery = raw.showBattery;
   if (typeof raw.showNetwork === "boolean") out.showNetwork = raw.showNetwork;
   if (typeof raw.showHint === "boolean") out.showHint = raw.showHint;
+  if (raw.lockDisplay === "internal" || raw.lockDisplay === "focused" || raw.lockDisplay === "all")
+    out.lockDisplay = raw.lockDisplay;
   if (typeof raw.fingerprintEnabled === "boolean") out.fingerprintEnabled = raw.fingerprintEnabled;
   if (typeof raw.faceEnabled === "boolean") out.faceEnabled = raw.faceEnabled;
   if (typeof raw.armOnInput === "boolean") out.armOnInput = raw.armOnInput;

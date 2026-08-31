@@ -11,6 +11,9 @@ Item {
   property bool fingerprintConfigured: false
   property bool fingerprintArmed: false
   property bool fingerprintScanning: false
+  property bool faceScanning: false
+  // False on secondary outputs: they show the background and nothing else.
+  property bool showInterface: true
   property string fingerprintMessage: ""
   property bool fingerprintRejected: false
   // Until the user touches anything, the lock shows the idle face rather
@@ -161,7 +164,7 @@ Item {
       networkName: root.networkName
       networkType: root.networkType
       showHint: root.showHint
-      visible: opacity > 0
+      visible: root.showInterface && (opacity > 0)
       opacity: root.showIdleFace ? 1 : 0
       Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutQuad } }
     }
@@ -173,12 +176,72 @@ Item {
       onPositionChanged: root.wakeRequested()
     }
 
+    Item {
+      id: faceIndicator
+      width: 96
+      height: 96
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.bottom: inputField.top
+      anchors.bottomMargin: 34
+      visible: root.showInterface && (opacity > 0)
+      opacity: root.faceScanning ? 1 : 0
+      Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutQuad } }
+
+      // Two rings, offset in phase, expanding outward while the camera looks.
+      Repeater {
+        model: 2
+        Rectangle {
+          required property int index
+          anchors.centerIn: parent
+          width: 46
+          height: 46
+          radius: width / 2
+          color: "transparent"
+          border.width: 2
+          border.color: Color.lock.text
+
+          SequentialAnimation {
+            running: root.faceScanning
+            loops: Animation.Infinite
+            PauseAnimation { duration: index * 700 }
+            ParallelAnimation {
+              NumberAnimation {
+                target: parent; property: "width"
+                from: 46; to: 92; duration: 1400; easing.type: Easing.OutQuad
+              }
+              NumberAnimation {
+                target: parent; property: "opacity"
+                from: 0.55; to: 0; duration: 1400; easing.type: Easing.OutQuad
+              }
+            }
+          }
+        }
+      }
+
+      Text {
+        anchors.centerIn: parent
+        text: "󰀉"
+        color: Color.lock.text
+        font.family: Style.font.family
+        font.pixelSize: 34
+        opacity: 0.95
+
+        // A slow breath so the eye reads as active rather than frozen.
+        SequentialAnimation on scale {
+          running: root.faceScanning
+          loops: Animation.Infinite
+          NumberAnimation { to: 1.09; duration: 900; easing.type: Easing.InOutQuad }
+          NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
+        }
+      }
+    }
+
     BorderSurface {
       id: inputField
       width: root.fieldWidth
       height: root.fieldHeight
       anchors.centerIn: parent
-      visible: opacity > 0
+      visible: root.showInterface && (opacity > 0)
       opacity: root.showIdleFace ? 0 : 1
       Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutQuad } }
       color: Color.lock.background

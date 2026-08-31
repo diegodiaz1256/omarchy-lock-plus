@@ -8,7 +8,13 @@
 
 set -euo pipefail
 
-FACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../face" && pwd)"
+FACE_DIR="$(dirname "${BASH_SOURCE[0]}")/../face"
+if [[ ! -d $FACE_DIR ]]; then
+  printf '\033[31m%s\033[0m\n' "cannot find the service files (expected $FACE_DIR)" >&2
+  echo "Run this script from the zeroge.lock plugin directory." >&2
+  exit 1
+fi
+FACE_DIR="$(cd "$FACE_DIR" && pwd)"
 DAEMON_SRC="$FACE_DIR/omarchy-lock-faced"
 CHECK_SRC="$FACE_DIR/omarchy-lock-face-check"
 UNIT_SRC="$FACE_DIR/omarchy-lock-faced.service"
@@ -38,9 +44,18 @@ USAGE
 check_prereqs() {
   local missing=0
 
-  if [[ ! -f /usr/lib/security/howdy/compare.py ]]; then
-    err "howdy is not installed (missing /usr/lib/security/howdy/compare.py)"
+  # /usr/lib/security/howdy is drw------- (root only), so an unprivileged test
+  # on anything inside it fails even when howdy is installed. Check the package
+  # and the /usr/bin/howdy symlink, both of which are readable.
+  if ! pacman -Qq howdy >/dev/null 2>&1 && [[ ! -e /usr/bin/howdy ]]; then
+    err "howdy is not installed"
     echo "     Install it with: omarchy pkg aur add howdy"
+    missing=1
+  fi
+
+  if [[ ! -f /usr/lib/security/pam_python.so ]]; then
+    err "pam-python is not installed"
+    echo "     howdy's PAM module needs it: omarchy pkg aur add pam-python"
     missing=1
   fi
 
@@ -51,12 +66,11 @@ check_prereqs() {
     missing=1
   fi
 
-  # An enrolled model is what makes any of this meaningful.
-  if ! sudo test -s /usr/lib/security/howdy/models/"$USER".dat 2>/dev/null; then
-    warn "no face enrolled for $USER"
-    echo "     Enrol one first, in a terminal: sudo howdy -U $USER add"
-    missing=1
-  fi
+  # The models live in the same root-only directory, so this cannot be checked
+  # without a password. Say what is needed rather than prompting for one here.
+  echo
+  echo "  This needs a face enrolled for $USER. If you have not done that yet:"
+  echo "      sudo howdy -U $USER add"
 
   return $missing
 }
@@ -135,7 +149,7 @@ do_install() {
     exit 1
   fi
 
-  ok "howdy installed, IR camera present, face enrolled for $USER"
+  ok "howdy installed, pam-python present, IR camera found"
   explain_risk
 
   read -r -p "Type 'yes' to enable face unlock: " reply

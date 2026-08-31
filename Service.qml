@@ -46,12 +46,15 @@ Item {
   property string networkType: ""
   property string lockBackground: ""
   property string sessionBackgroundPath: ""
+  // Output that should carry the lock interface, captured when locking starts.
+  property string lockScreenName: ""
   property int lockBlur: 64
   property bool cfgShowWeather: true
   property bool cfgShowDate: true
   property bool cfgShowBattery: true
   property bool cfgShowNetwork: true
   property bool cfgShowHint: true
+  property string cfgLockDisplay: "internal"
   // Latest prompt from pam_fprintd ("Place your finger…", "Failed to
   // match"), surfaced so a touch is not silently ignored.
   property string fingerprintMessage: ""
@@ -166,7 +169,14 @@ Item {
     if (fingerprintPam.active) fingerprintPam.abort()
   }
 
+  // Remember which output was focused, so the interface lands there rather
+  // than on whichever screen happens to be first.
+  function captureLockScreen() {
+    if (!focusedScreenProc.running) focusedScreenProc.running = true
+  }
+
   function beginLock() {
+    captureLockScreen()
     if (!passwordPamConfigured) {
       logEvent("lock-denied: missing-pam")
       return false
@@ -354,9 +364,22 @@ Item {
       id: lockSurface
       color: Color.background
 
+      // Which output carries the interface. Preferring the focused screen at
+      // lock time puts it where the user was already looking; the first screen
+      // is the fallback when that is unknown.
+      readonly property bool primary:
+        root.cfgLockDisplay === "all" ? true
+          : (root.lockScreenName.length > 0
+             ? (screen && screen.name === root.lockScreenName)
+             : (screen && Quickshell.screens.length > 0
+                && screen.name === Quickshell.screens[0].name))
+
       LockView {
         id: lockView
         anchors.fill: parent
+        // Secondary outputs show the background only: no clock, no password
+        // field, nothing to type into by accident.
+        showInterface: lockSurface.primary
         backgroundPath: root.backgroundPath
         backgroundVersion: root.backgroundVersion
         fingerprintConfigured: root.fingerprintConfigured
@@ -373,6 +396,7 @@ Item {
         showHint: root.cfgShowHint
         backgroundBlur: root.lockBlur
         fingerprintScanning: root.fingerprintAuthenticating
+        faceScanning: root.faceAuthenticating
         fingerprintMessage: root.fingerprintMessage
         fingerprintRejected: root.fingerprintRejected
         authenticatingPassword: root.authenticatingPassword
@@ -484,7 +508,9 @@ Item {
     onCompleted: function(result) {
       root.faceAuthenticating = false
       if (!root.lockRequested) return
-      if (result === PamResult.Success) root.finishUnlock()
+      if (result === PamResult.Success) { root.finishUnlock(); return }
+      // Distinguish "the camera saw nothing" from an ordinary non-match.
+      if (!faceDarkProbe.running) faceDarkProbe.running = true
       // No retry loop: howdy holds the camera for its own timeout, and
       // re-running it in a loop would pin the device the way the fingerprint
       // retries once did.
@@ -492,6 +518,27 @@ Item {
 
     onError: function(error) {
       root.faceAuthenticating = false
+    }
+  }
+
+  // Exit 2 from the check client means every frame was essentially black.
+  // A covered lens and an unlit room are indistinguishable here, so the
+  // message offers the shutter as a possibility rather than a diagnosis.
+  Process {
+    id: faceDarkProbe
+    command: ["bash", "-c",
+      "test -x /usr/local/bin/omarchy-lock-face-check || exit 1; " +
+      "/usr/local/bin/omarchy-lock-face-check; echo $?"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.lockRequested || !root.fingerprintArmed) return
+        if (String(text || "").trim() === "2") {
+          root.fingerprintMessage = "Camera sees nothing — is it covered?"
+          root.fingerprintRejected = true
+          fingerprintRejectTimer.restart()
+        }
+      }
     }
   }
 
@@ -516,6 +563,29 @@ Item {
     interval: 250
     repeat: false
     onTriggered: root.startFingerprint()
+  }
+
+  Process {
+    id: focusedScreenProc
+    // The laptop panel is where the user physically is, and where the
+    // fingerprint reader and IR camera are. Prefer it whenever the lid is open
+    // (a closed lid disables the output, so it simply will not be listed);
+    // otherwise fall back to the focused screen, then to any screen at all.
+    command: ["bash", "-c",
+      "m=$(hyprctl -j monitors 2>/dev/null); " +
+      "want=\"" + root.cfgLockDisplay + "\"; " +
+      "n=''; " +
+      "[ \"$want\" = internal ] && n=$(printf '%s' \"$m\" | jq -r '[.[] | select(.name | test(\"^(eDP|LVDS|DSI)\"; \"i\"))][0].name // empty'); " +
+      "[ -z \"$n\" ] && n=$(printf '%s' \"$m\" | jq -r '[.[] | select(.focused)][0].name // empty'); " +
+      "[ -z \"$n\" ] && n=$(printf '%s' \"$m\" | jq -r '.[0].name // empty'); " +
+      "printf '%s' \"$n\""]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var n = String(text || "").trim()
+        if (n.length > 0) root.lockScreenName = n
+      }
+    }
   }
 
   Process {
@@ -618,6 +688,8 @@ Item {
         if (typeof d.showBattery === "boolean") root.cfgShowBattery = d.showBattery
         if (typeof d.showNetwork === "boolean") root.cfgShowNetwork = d.showNetwork
         if (typeof d.showHint === "boolean") root.cfgShowHint = d.showHint
+        if (d.lockDisplay === "internal" || d.lockDisplay === "focused" || d.lockDisplay === "all")
+          root.cfgLockDisplay = d.lockDisplay
         if (typeof d.background === "string") root.lockBackground = d.background
         var b = parseInt(d.blur)
         if (!isNaN(b)) root.lockBlur = Math.max(0, Math.min(128, b))

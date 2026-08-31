@@ -68,23 +68,33 @@ def username_for(uid):
     return name
 
 
+# howdy compare.py exit codes worth distinguishing.
+MATCH = 0
+NO_MATCH = 11
+TOO_DARK = 13
+
+
 def verify(username):
-    """Run howdy's comparator for this user. True only on a clean match."""
+    """Run howdy's comparator. Returns its exit code, or None if it failed."""
     try:
         proc = subprocess.run(
             [PYTHON, COMPARE, username],
             env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/root"},
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             timeout=TIMEOUT,
         )
-        return proc.returncode == 0
+        if proc.returncode != 0:
+            detail = (proc.stderr or b"").decode("utf-8", "replace").strip()
+            log("compare exit=%d%s" % (proc.returncode,
+                                       (": " + detail.splitlines()[-1]) if detail else ""))
+        return proc.returncode
     except subprocess.TimeoutExpired:
         log("compare timed out")
-        return False
+        return None
     except Exception as exc:  # noqa: BLE001
         log("compare failed: " + str(exc))
-        return False
+        return None
 
 
 def handle(conn):
@@ -113,7 +123,16 @@ def handle(conn):
                 conn.sendall(b"N")
                 return
             _last_attempt[uid] = now
-            conn.sendall(b"Y" if verify(username) else b"N")
+            rc = verify(username)
+            # 'D' means the camera saw essentially nothing — a covered lens or
+            # a dark room look identical from here, so the caller words it as a
+            # possibility rather than a fact.
+            if rc == MATCH:
+                conn.sendall(b"Y")
+            elif rc == TOO_DARK:
+                conn.sendall(b"D")
+            else:
+                conn.sendall(b"N")
         finally:
             _lock.release()
 

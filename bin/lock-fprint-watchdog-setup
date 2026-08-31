@@ -6,7 +6,13 @@
 
 set -euo pipefail
 
-FACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../face" && pwd)"
+FACE_DIR="$(dirname "${BASH_SOURCE[0]}")/../face"
+if [[ ! -d $FACE_DIR ]]; then
+  printf '\033[31m%s\033[0m\n' "cannot find the service files (expected $FACE_DIR)" >&2
+  echo "Run this script from the zeroge.lock plugin directory." >&2
+  exit 1
+fi
+FACE_DIR="$(cd "$FACE_DIR" && pwd)"
 SRC="$FACE_DIR/omarchy-fprint-watchdog"
 UNIT_SRC="$FACE_DIR/omarchy-fprint-watchdog.service"
 DST=/usr/local/lib/omarchy-fprint-watchdog
