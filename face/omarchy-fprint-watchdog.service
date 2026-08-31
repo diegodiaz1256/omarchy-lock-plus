@@ -1,0 +1,29 @@
+[Unit]
+Description=Recover the fingerprint reader after a libfprint-egismoc driver crash
+Documentation=https://github.com/TenSeventy7/libfprint-egismoc-sdcp
+After=systemd-journald.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/omarchy-fprint-watchdog
+Restart=always
+RestartSec=5
+
+# It only needs to read the journal and clear one file under /var/lib/fprint.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/fprint
+
+[Install]
+WantedBy=multi-user.target

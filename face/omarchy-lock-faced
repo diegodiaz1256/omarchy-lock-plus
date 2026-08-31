@@ -1,0 +1,156 @@
+#!/usr/bin/python3
+"""
+omarchy-lock-faced — face verification for the lock screen, over a socket.
+
+Howdy keeps its models and config root-only, which is correct: the enrolled
+face is biometric data. But the lock screen's PAM stack runs as the desktop
+user, so howdy's own pam.py cannot read its module ("Can not open module:
+Permission denied") and the camera never opens.
+
+This bridges that gap the way fprintd does, rather than with a setuid binary:
+
+  - The client never gains privilege. It connects to a socket and reads one
+    byte back; it does not become root at any point.
+  - Identity comes from the kernel via SO_PEERCRED, not from anything the
+    client says. A caller cannot ask about another user.
+  - Nothing crosses the boundary but that one byte. No argv, no environment,
+    no paths.
+  - The unit around this is sandboxed (ProtectSystem=strict, ProtectHome,
+    NoNewPrivileges, SystemCallFilter, only the video device), so a flaw in
+    dlib/OpenCV is confined rather than being root in the user's session.
+
+Requests are serialised: howdy holds the camera for its timeout, and running
+several at once would pin the device the way the fingerprint retry loop once
+pinned the reader.
+"""
+
+import os
+import pwd
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+SOCKET_PATH = "/run/omarchy-lock-faced.sock"
+COMPARE = "/usr/lib/security/howdy/compare.py"
+PYTHON = "/usr/bin/python3"
+
+MIN_UID = 1000          # never root or system accounts
+TIMEOUT = 15            # hard cap around howdy's own ~4s
+COOLDOWN = 2.0          # seconds between attempts for the same user
+
+_lock = threading.Lock()
+_last_attempt = {}
+
+
+def log(msg):
+    print("omarchy-lock-faced: " + msg, file=sys.stderr, flush=True)
+
+
+def peer_uid(conn):
+    """Kernel-reported credentials of the connecting process."""
+    creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                            struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", creds)
+    return uid
+
+
+def username_for(uid):
+    try:
+        pw = pwd.getpwuid(uid)
+    except KeyError:
+        return None
+    name = pw.pw_name
+    if not name or "/" in name or name.startswith("-"):
+        return None
+    return name
+
+
+def verify(username):
+    """Run howdy's comparator for this user. True only on a clean match."""
+    try:
+        proc = subprocess.run(
+            [PYTHON, COMPARE, username],
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/root"},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=TIMEOUT,
+        )
+        return proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        log("compare timed out")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        log("compare failed: " + str(exc))
+        return False
+
+
+def handle(conn):
+    with conn:
+        try:
+            uid = peer_uid(conn)
+        except OSError:
+            return
+
+        if uid < MIN_UID:
+            conn.sendall(b"N")
+            return
+
+        username = username_for(uid)
+        if username is None:
+            conn.sendall(b"N")
+            return
+
+        # Serialise: one camera user at a time, and not too often.
+        if not _lock.acquire(blocking=False):
+            conn.sendall(b"N")
+            return
+        try:
+            now = time.monotonic()
+            if now - _last_attempt.get(uid, 0.0) < COOLDOWN:
+                conn.sendall(b"N")
+                return
+            _last_attempt[uid] = now
+            conn.sendall(b"Y" if verify(username) else b"N")
+        finally:
+            _lock.release()
+
+
+def main():
+    if os.geteuid() != 0:
+        log("must run as root")
+        return 1
+
+    if not os.path.exists(COMPARE):
+        log("missing " + COMPARE + " — is howdy installed?")
+        return 1
+
+    try:
+        os.unlink(SOCKET_PATH)
+    except FileNotFoundError:
+        pass
+
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCKET_PATH)
+    # Any local user may ask; the answer is always about themselves alone.
+    os.chmod(SOCKET_PATH, 0o666)
+    srv.listen(8)
+    log("ready")
+
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except KeyboardInterrupt:
+            break
+        except OSError:
+            continue
+        conn.settimeout(TIMEOUT + 5)
+        threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

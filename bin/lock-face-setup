@@ -1,0 +1,206 @@
+#!/bin/bash
+# lock-face-setup — enable (or remove) face unlock for the Omarchy lock screen.
+#
+# Face unlock is OPT-IN and off by default. It is not installed with the
+# plugin, because turning it on means running howdy's face matcher as root in
+# response to a request from an unprivileged session. That is a real trade-off,
+# and it is the user's to make, so this script states it plainly and asks.
+
+set -euo pipefail
+
+FACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../face" && pwd)"
+DAEMON_SRC="$FACE_DIR/omarchy-lock-faced"
+CHECK_SRC="$FACE_DIR/omarchy-lock-face-check"
+UNIT_SRC="$FACE_DIR/omarchy-lock-faced.service"
+
+DAEMON_DST=/usr/local/lib/omarchy-lock-faced
+CHECK_DST=/usr/local/bin/omarchy-lock-face-check
+UNIT_DST=/etc/systemd/system/omarchy-lock-faced.service
+PAM_DST=/etc/pam.d/omarchy-lock-face
+
+bold() { printf '\033[1m%s\033[0m\n' "$1"; }
+warn() { printf '\033[33m%s\033[0m\n' "$1"; }
+err()  { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+ok()   { printf '\033[32m%s\033[0m\n' "$1"; }
+
+usage() {
+  cat <<'USAGE'
+Usage: lock-face-setup [--install | --remove | --status]
+
+  --install   Set up face unlock (asks for confirmation first)
+  --remove    Remove it completely and disable face unlock
+  --status    Report what is currently installed
+
+With no arguments, prints this help.
+USAGE
+}
+
+check_prereqs() {
+  local missing=0
+
+  if [[ ! -f /usr/lib/security/howdy/compare.py ]]; then
+    err "howdy is not installed (missing /usr/lib/security/howdy/compare.py)"
+    echo "     Install it with: omarchy pkg aur add howdy"
+    missing=1
+  fi
+
+  if [[ ! -e /dev/v4l/ir-camera ]]; then
+    err "no IR camera found at /dev/v4l/ir-camera"
+    echo "     Face unlock needs a real infrared camera; a webcam alone is not"
+    echo "     enough, and is trivially fooled by a photograph."
+    missing=1
+  fi
+
+  # An enrolled model is what makes any of this meaningful.
+  if ! sudo test -s /usr/lib/security/howdy/models/"$USER".dat 2>/dev/null; then
+    warn "no face enrolled for $USER"
+    echo "     Enrol one first, in a terminal: sudo howdy -U $USER add"
+    missing=1
+  fi
+
+  return $missing
+}
+
+explain_risk() {
+  cat <<'RISK'
+
+────────────────────────────────────────────────────────────────────────
+  What you are turning on, and what it costs
+────────────────────────────────────────────────────────────────────────
+
+Howdy keeps your enrolled face model root-only, which is correct: it is
+biometric data. The lock screen runs as your user, so it cannot read that
+model, and face unlock simply does nothing today.
+
+Enabling it installs a small root service that answers one question:
+"does the person at the camera match the user who asked?"
+
+How it is kept contained:
+
+  * Your session never gains privilege. It connects to a socket and reads
+    one byte back. There is no setuid binary and no privilege transition
+    in your process.
+  * The service asks the KERNEL who connected (SO_PEERCRED). A caller
+    cannot claim to be someone else, and cannot ask about another account.
+  * Nothing crosses the boundary but that one byte — no arguments, no
+    environment, no paths.
+  * The service is sandboxed by systemd: no home access, no network, no
+    new privileges, a syscall filter, and access to the IR camera alone.
+    This mirrors how fprintd handles fingerprints.
+
+The honest residual risk:
+
+  * howdy's matcher still runs as root, and still decodes camera frames
+    with OpenCV and dlib. Image decoders have a long history of memory-
+    safety bugs. The sandbox limits what a flaw there could reach; it does
+    not make the code itself safe.
+  * Any local user can trigger a face check (only ever about themselves).
+    That means camera use and CPU cost are reachable by local processes.
+  * IR face matching is a WEAKER factor than your fingerprint. It can be
+    defeated by a sufficiently good likeness; your reader cannot.
+
+If you are unsure, do not enable this. Fingerprint and password unlock
+both work without it, and fingerprint is the stronger of the two.
+
+────────────────────────────────────────────────────────────────────────
+
+RISK
+}
+
+do_status() {
+  bold "Face unlock status"
+  local any=0
+  for pair in "$DAEMON_DST:daemon" "$CHECK_DST:client" "$UNIT_DST:unit" "$PAM_DST:PAM stack"; do
+    local path="${pair%%:*}" label="${pair##*:}"
+    if [[ -e $path ]]; then printf '  installed   %-10s %s\n' "$label" "$path"; any=1
+    else printf '  absent      %-10s %s\n' "$label" "$path"; fi
+  done
+  echo
+  if systemctl is-active --quiet omarchy-lock-faced.service 2>/dev/null; then
+    ok "  service is running"
+  elif [[ $any -eq 1 ]]; then
+    warn "  service is not running"
+  else
+    echo "  face unlock is not set up (this is the default)"
+  fi
+}
+
+do_install() {
+  bold "Setting up face unlock for the lock screen"
+  echo
+
+  if ! check_prereqs; then
+    echo
+    err "Prerequisites are not met. Nothing was changed."
+    exit 1
+  fi
+
+  ok "howdy installed, IR camera present, face enrolled for $USER"
+  explain_risk
+
+  read -r -p "Type 'yes' to enable face unlock: " reply
+  if [[ $reply != "yes" ]]; then
+    echo "Nothing was changed."
+    exit 0
+  fi
+
+  echo
+  echo "Installing (you will be asked for your password)…"
+
+  sudo install -m 755 -o root -g root "$DAEMON_SRC" "$DAEMON_DST"
+  sudo install -m 755 -o root -g root "$CHECK_SRC"  "$CHECK_DST"
+  sudo install -m 644 -o root -g root "$UNIT_SRC"   "$UNIT_DST"
+
+  # howdy writes failure snapshots; make sure the sandbox has somewhere to put
+  # them rather than failing on a read-only path.
+  sudo install -d -m 700 -o root -g root /usr/lib/security/howdy/snapshots
+
+  sudo tee "$PAM_DST" >/dev/null <<'PAMEOF'
+#%PAM-1.0
+# Face unlock for the Omarchy lock screen.
+#
+# pam_exec runs the unprivileged client, which asks the sandboxed
+# omarchy-lock-faced service about the calling user. The lock screen falls
+# back to omarchy-lock-password whenever this does not succeed.
+auth       required                    pam_exec.so quiet /usr/local/bin/omarchy-lock-face-check
+account    include                     system-local-login
+PAMEOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now omarchy-lock-faced.service
+
+  echo
+  if systemctl is-active --quiet omarchy-lock-faced.service; then
+    ok "Face unlock is set up and the service is running."
+    echo
+    echo "Turn it on in the lock screen settings panel (menu → Lock Screen),"
+    echo "then lock and press any key: fingerprint and face start together."
+    echo
+    echo "To undo all of this: lock-face-setup --remove"
+  else
+    err "The service failed to start. Face unlock will stay inactive."
+    echo "Check: systemctl status omarchy-lock-faced.service"
+    exit 1
+  fi
+}
+
+do_remove() {
+  bold "Removing face unlock"
+  echo "You will be asked for your password."
+
+  sudo systemctl disable --now omarchy-lock-faced.service 2>/dev/null || true
+  sudo rm -f "$DAEMON_DST" "$CHECK_DST" "$UNIT_DST" "$PAM_DST"
+  sudo systemctl daemon-reload
+
+  # Leave howdy, its models, and the camera alone: they were not ours to add.
+  echo
+  ok "Removed. The lock screen will use fingerprint and password only."
+  echo "howdy itself and your enrolled face were left untouched."
+}
+
+case "${1:-}" in
+  --install) do_install ;;
+  --remove)  do_remove ;;
+  --status)  do_status ;;
+  *)         usage ;;
+esac

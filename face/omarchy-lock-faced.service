@@ -1,0 +1,46 @@
+[Unit]
+Description=Face verification for the Omarchy lock screen
+Documentation=https://github.com/boltgolt/howdy
+# Nothing else should be holding the IR camera when this starts.
+After=systemd-user-sessions.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/omarchy-lock-faced
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=omarchy-lock-faced
+
+# The point of this service is to keep howdy's root-only work away from the
+# user's session. If dlib or OpenCV has a memory-safety bug, it executes here,
+# inside this confinement, rather than as root inside the desktop session.
+# Mirrors fprintd.service, which solves the same problem for fingerprints.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=yes
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Local socket only: this service has no business on the network.
+RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=true
+
+# The IR camera, and nothing else.
+PrivateDevices=yes
+DeviceAllow=char-video4linux rw
+
+# howdy reads its models and config from here, and writes failure snapshots.
+ReadOnlyPaths=/usr/lib/security/howdy
+ReadWritePaths=/usr/lib/security/howdy/snapshots
+
+[Install]
+WantedBy=multi-user.target

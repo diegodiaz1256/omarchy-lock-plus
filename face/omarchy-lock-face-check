@@ -1,0 +1,33 @@
+#!/usr/bin/python3
+"""
+omarchy-lock-face-check — ask the face daemon about the user running this.
+
+Runs entirely unprivileged. It sends nothing: the daemon reads the caller's
+identity from the kernel (SO_PEERCRED), so this cannot ask about anyone else.
+
+Exit 0 on a match, 1 otherwise. PAM reads only that status.
+"""
+
+import socket
+import sys
+
+SOCKET_PATH = "/run/omarchy-lock-faced.sock"
+TIMEOUT = 20
+
+
+def main():
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(TIMEOUT)
+        s.connect(SOCKET_PATH)
+        reply = s.recv(1)
+        s.close()
+    except (OSError, socket.timeout):
+        # No daemon, no camera, no answer: fall through to the next method.
+        return 1
+
+    return 0 if reply == b"Y" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

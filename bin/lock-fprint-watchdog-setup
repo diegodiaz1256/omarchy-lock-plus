@@ -1,0 +1,122 @@
+#!/bin/bash
+# lock-fprint-watchdog-setup — install or remove the fingerprint recovery
+# watchdog. Optional: it exists to work around a driver bug, not to add a
+# feature, so it should be a deliberate choice rather than something a lock
+# screen plugin installs behind your back.
+
+set -euo pipefail
+
+FACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../face" && pwd)"
+SRC="$FACE_DIR/omarchy-fprint-watchdog"
+UNIT_SRC="$FACE_DIR/omarchy-fprint-watchdog.service"
+DST=/usr/local/lib/omarchy-fprint-watchdog
+UNIT_DST=/etc/systemd/system/omarchy-fprint-watchdog.service
+
+bold() { printf '\033[1m%s\033[0m\n' "$1"; }
+ok()   { printf '\033[32m%s\033[0m\n' "$1"; }
+err()  { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+
+usage() {
+  cat <<'USAGE'
+Usage: lock-fprint-watchdog-setup [--install | --remove | --status]
+
+  --install   Install and enable the watchdog (asks first)
+  --remove    Stop, disable and remove it
+  --status    Report whether it is installed and running
+USAGE
+}
+
+explain() {
+  cat <<'WHY'
+
+────────────────────────────────────────────────────────────────────────
+  What this is for
+────────────────────────────────────────────────────────────────────────
+
+The libfprint-egismoc driver asserts and aborts fprintd when the reader is
+opened while another operation is still running:
+
+  egismoc.c:1907: egismoc_open: assertion failed: (self->task_ssm == NULL)
+
+sudo, polkit and the lock screen all use the reader, so this collision is
+easy to hit — 374 crashes over three days on this machine.
+
+The abort leaves a corrupted SDCP pairing claim on disk. After that, EVERY
+fingerprint verify fails until the claim is deleted by hand:
+
+  SDCP AuthorizedIdentity verification failed
+
+That breaks fingerprint for sudo, polkit and the lock screen at once, with
+no visible reason, and it survives a reboot.
+
+The watchdog watches the journal for that failure and clears the stale
+claim so the driver re-pairs on next use.
+
+What it costs:
+
+  * A small root service running continuously (reads the journal, and can
+    write only to /var/lib/fprint). Sandboxed: no home access, no network,
+    no new privileges.
+  * It fixes the symptom, not the driver. The real fix is upstream:
+    https://github.com/TenSeventy7/libfprint-egismoc-sdcp/issues/13
+
+If your fingerprint reader is reliable, you do not need this.
+
+────────────────────────────────────────────────────────────────────────
+
+WHY
+}
+
+do_status() {
+  bold "Fingerprint watchdog status"
+  [[ -e $DST ]] && printf '  installed   %s\n' "$DST" || printf '  absent      %s\n' "$DST"
+  [[ -e $UNIT_DST ]] && printf '  installed   %s\n' "$UNIT_DST" || printf '  absent      %s\n' "$UNIT_DST"
+  if systemctl is-active --quiet omarchy-fprint-watchdog.service 2>/dev/null; then
+    ok "  service is running"
+  else
+    echo "  service is not running"
+  fi
+}
+
+do_install() {
+  bold "Fingerprint recovery watchdog"
+  explain
+  read -r -p "Type 'yes' to install: " reply
+  [[ $reply == "yes" ]] || { echo "Nothing was changed."; exit 0; }
+
+  echo
+  echo "Installing (you will be asked for your password)…"
+  sudo install -m 755 -o root -g root "$SRC" "$DST"
+  sudo install -m 644 -o root -g root "$UNIT_SRC" "$UNIT_DST"
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now omarchy-fprint-watchdog.service
+
+  echo
+  if systemctl is-active --quiet omarchy-fprint-watchdog.service; then
+    ok "Watchdog installed and running."
+    echo "To undo: lock-fprint-watchdog-setup --remove"
+  else
+    err "The service failed to start."
+    echo "Check: systemctl status omarchy-fprint-watchdog.service"
+    exit 1
+  fi
+}
+
+do_remove() {
+  bold "Removing the fingerprint watchdog"
+  echo "You will be asked for your password."
+  sudo systemctl disable --now omarchy-fprint-watchdog.service 2>/dev/null || true
+  sudo rm -f "$DST" "$UNIT_DST"
+  sudo systemctl daemon-reload
+  echo
+  ok "Removed."
+  echo "If the reader wedges again, clear the claim by hand:"
+  echo "  sudo rm /var/lib/fprint/egismoc/*/sdcp-claim"
+}
+
+case "${1:-}" in
+  --install) do_install ;;
+  --remove)  do_remove ;;
+  --status)  do_status ;;
+  *)         usage ;;
+esac

@@ -1,0 +1,70 @@
+#!/bin/bash
+# omarchy-fprint-watchdog — recover the fingerprint reader after a driver crash.
+#
+# libfprint-egismoc-sdcp asserts if the reader is opened while another
+# operation is still in flight:
+#
+#   egismoc.c:1907: egismoc_open: assertion failed: (self->task_ssm == NULL)
+#
+# That aborts the whole fprintd process. The abort leaves a stale SDCP pairing
+# claim on disk, and from then on every verify fails with
+# "SDCP AuthorizedIdentity verification failed" — silently breaking fingerprint
+# for sudo, polkit and the lock screen at once, until the claim is cleared.
+#
+# Three consumers compete for the reader here (sudo, polkit-1, the lock
+# screen), so the collision is not rare: 374 crashes over three days.
+#
+# This watches the journal for that failure and clears the stale claim so the
+# driver re-pairs on the next use. It does not fix the crash — that needs a fix
+# upstream — it just stops a crash from leaving fingerprint dead until someone
+# debugs it by hand.
+
+set -euo pipefail
+
+CLAIM_DIR=/var/lib/fprint/egismoc
+TAG="omarchy-fprint-watchdog"
+# Don't thrash if something is wrong in a way clearing cannot fix.
+COOLDOWN=60
+last_fix=0
+
+log() { logger -t "$TAG" -- "$1"; echo "$TAG: $1"; }
+
+clear_claim() {
+  local now
+  now=$(date +%s)
+  if (( now - last_fix < COOLDOWN )); then
+    log "stale claim seen again within ${COOLDOWN}s; not clearing (needs a look)"
+    return
+  fi
+  last_fix=$now
+
+  local found=0
+  shopt -s nullglob
+  for claim in "$CLAIM_DIR"/*/sdcp-claim; do
+    found=1
+    log "clearing stale SDCP claim: $claim"
+    rm -f "$claim"
+  done
+  shopt -u nullglob
+
+  if (( found == 0 )); then
+    log "no SDCP claim found to clear"
+    return
+  fi
+
+  # Let the daemon exit so the next request re-pairs from a clean state.
+  systemctl stop fprintd.service 2>/dev/null || true
+  log "cleared; fprintd will re-pair on next use"
+}
+
+log "watching for SDCP pairing failures"
+
+# --since=now so a backlog of old failures does not trigger a fix at boot.
+journalctl -f --since=now -o cat -u fprintd.service 2>/dev/null | while read -r line; do
+  case "$line" in
+    *"SDCP AuthorizedIdentity verification failed"*|*"SDCP Identify response was not valid"*)
+      log "detected: $line"
+      clear_claim
+      ;;
+  esac
+done
