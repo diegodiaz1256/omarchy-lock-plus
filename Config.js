@@ -15,6 +15,11 @@ var DEFAULTS = {
   //   "focused"  — whichever screen was focused when locking
   //   "all"      — every screen, as the stock lock screen does
   lockDisplay: "internal",
+  // Where the lock goes when the preferred display is not available — a shut
+  // lid, or an undocked monitor. "focused" follows the active screen; a
+  // monitor description pins it to one display. Descriptions survive a replug;
+  // connector names like DP-5 shuffle on a dock.
+  lockFallback: "focused",
   // Auth methods. Fingerprint and face are only offered when the system is
   // actually set up for them; these toggles gate the lock screen's use of
   // what exists, they do not enroll anything.
@@ -38,8 +43,10 @@ function normalize(raw) {
   if (typeof raw.showBattery === "boolean") out.showBattery = raw.showBattery;
   if (typeof raw.showNetwork === "boolean") out.showNetwork = raw.showNetwork;
   if (typeof raw.showHint === "boolean") out.showHint = raw.showHint;
-  if (raw.lockDisplay === "internal" || raw.lockDisplay === "focused" || raw.lockDisplay === "all")
+  if (raw.lockDisplay === "internal" || raw.lockDisplay === "focused"
+      || raw.lockDisplay === "all")
     out.lockDisplay = raw.lockDisplay;
+  if (typeof raw.lockFallback === "string") out.lockFallback = raw.lockFallback;
   if (typeof raw.fingerprintEnabled === "boolean") out.fingerprintEnabled = raw.fingerprintEnabled;
   if (typeof raw.faceEnabled === "boolean") out.faceEnabled = raw.faceEnabled;
   if (typeof raw.armOnInput === "boolean") out.armOnInput = raw.armOnInput;

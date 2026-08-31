@@ -30,6 +30,11 @@ Item {
   // The idle face gives way on the first deliberate input, the same
   // gesture that arms the reader.
   property bool idleFaceVisible: true
+  // The keypress that wakes the machine should not also dismiss the idle face:
+  // the user has not seen it yet. Input is ignored for a moment after a resume
+  // so the clock is actually shown before the password field takes over.
+  property double resumeGuardUntil: 0
+  readonly property int resumeGraceMs: 900
   // Settings owned by the zeroge.lockface panel. Defaults here match its
   // Config.js, so the lock behaves sanely before the file exists.
   property bool cfgFingerprintEnabled: true
@@ -48,6 +53,27 @@ Item {
   property string sessionBackgroundPath: ""
   // Output that should carry the lock interface, captured when locking starts.
   property string lockScreenName: ""
+
+  // The probe can name a screen that disappears moments later (a lid close
+  // locks before the output is dropped), so resolve it against what is live.
+  property string lockScreenFallback: ""
+
+  function screenExists(name) {
+    var screens = Quickshell.screens || []
+    for (var i = 0; i < screens.length; i++)
+      if (screens[i] && screens[i].name === name) return true
+    return false
+  }
+
+  readonly property string activeLockScreen: {
+    var screens = Quickshell.screens || []
+    if (screens.length === 0) return ""
+    if (lockScreenName.length > 0 && screenExists(lockScreenName)) return lockScreenName
+    // The internal panel is gone (lid shut, or docked): use the screen that
+    // had focus rather than an arbitrary array position.
+    if (lockScreenFallback.length > 0 && screenExists(lockScreenFallback)) return lockScreenFallback
+    return screens[0].name
+  }
   property int lockBlur: 64
   property bool cfgShowWeather: true
   property bool cfgShowDate: true
@@ -55,6 +81,7 @@ Item {
   property bool cfgShowNetwork: true
   property bool cfgShowHint: true
   property string cfgLockDisplay: "internal"
+  property string cfgLockFallback: "focused"
   // Latest prompt from pam_fprintd ("Place your finger…", "Failed to
   // match"), surfaced so a touch is not silently ignored.
   property string fingerprintMessage: ""
@@ -289,6 +316,11 @@ Item {
   }
 
   function armFingerprint() {
+    // Swallow the wake keystroke, and let the next one through.
+    if (Date.now() < resumeGuardUntil) {
+      resumeGuardUntil = 0
+      return
+    }
     idleFaceVisible = false
     if (fingerprintArmed) return
     fingerprintArmed = true
@@ -336,6 +368,7 @@ Item {
     onSecureStateChanged: {
       root.logEvent("secure=" + secure)
       if (secure) {
+        resumeWatch.lastTick = Date.now()
         root.pendingSessionLock = false
         sessionLockStabilizeTimer.stop()
         pendingSessionLockTimer.stop()
@@ -371,10 +404,7 @@ Item {
       // is the fallback when that is unknown.
       readonly property bool primary:
         root.cfgLockDisplay === "all" ? true
-          : (root.lockScreenName.length > 0
-             ? (screen && screen.name === root.lockScreenName)
-             : (screen && Quickshell.screens.length > 0
-                && screen.name === Quickshell.screens[0].name))
+          : (screen && screen.name === root.activeLockScreen)
 
       LockView {
         id: lockView
@@ -554,6 +584,44 @@ Item {
     onLoadFailed: root.faceConfigured = false
   }
 
+  // Watches wall-clock time to notice a suspend: on resume the lock returns to
+  // the idle face, so the user sees the clock rather than whatever state the
+  // screen was left in before it slept.
+  Connections {
+    target: Quickshell
+    function onScreensChanged() {
+      if (root.lockRequested) screenSettleTimer.restart()
+    }
+  }
+
+  // Outputs arrive and vanish in bursts on a lid close or a resume; settle
+  // first, then ask once.
+  Timer {
+    id: screenSettleTimer
+    interval: 600
+    repeat: false
+    onTriggered: if (root.lockRequested) root.captureLockScreen()
+  }
+
+  Timer {
+    id: resumeWatch
+    interval: 2000
+    repeat: true
+    running: root.lockRequested
+    property double lastTick: Date.now()
+    onTriggered: {
+      var now = Date.now()
+      var gap = now - lastTick
+      lastTick = now
+      // A gap well past the interval means time passed without ticks.
+      if (gap > interval + 4000 && root.lockRequested) {
+        root.logEvent("resumed after " + Math.round(gap / 1000) + "s")
+        root.resumeGuardUntil = now + root.resumeGraceMs
+        root.dismissToIdle()
+      }
+    }
+  }
+
   Timer {
     id: failureClearTimer
     interval: 4000
@@ -595,14 +663,19 @@ Item {
       "want=\"" + root.cfgLockDisplay + "\"; " +
       "n=''; " +
       "[ \"$want\" = internal ] && n=$(printf '%s' \"$m\" | jq -r '[.[] | select(.name | test(\"^(eDP|LVDS|DSI)\"; \"i\"))][0].name // empty'); " +
+      "fb=\"" + root.cfgLockFallback + "\"; " +
+      "[ -z \"$n\" ] && [ \"$fb\" != focused ] && n=$(printf '%s' \"$m\" | jq -r --arg d \"$fb\" '[.[] | select((.description // .name) == $d)][0].name // empty'); " +
       "[ -z \"$n\" ] && n=$(printf '%s' \"$m\" | jq -r '[.[] | select(.focused)][0].name // empty'); " +
+      "f=$(printf '%s' \"$m\" | jq -r '[.[] | select(.focused)][0].name // empty'); " +
+      "[ -z \"$n\" ] && n=$f; " +
       "[ -z \"$n\" ] && n=$(printf '%s' \"$m\" | jq -r '.[0].name // empty'); " +
-      "printf '%s' \"$n\""]
+      "printf '%s;%s' \"$n\" \"$f\""]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var n = String(text || "").trim()
-        if (n.length > 0) root.lockScreenName = n
+        var parts = String(text || "").trim().split(";")
+        if (parts[0] && parts[0].length > 0) root.lockScreenName = parts[0]
+        if (parts[1] && parts[1].length > 0) root.lockScreenFallback = parts[1]
       }
     }
   }
@@ -707,8 +780,10 @@ Item {
         if (typeof d.showBattery === "boolean") root.cfgShowBattery = d.showBattery
         if (typeof d.showNetwork === "boolean") root.cfgShowNetwork = d.showNetwork
         if (typeof d.showHint === "boolean") root.cfgShowHint = d.showHint
-        if (d.lockDisplay === "internal" || d.lockDisplay === "focused" || d.lockDisplay === "all")
+        if (d.lockDisplay === "internal" || d.lockDisplay === "focused"
+            || d.lockDisplay === "all")
           root.cfgLockDisplay = d.lockDisplay
+        if (typeof d.lockFallback === "string") root.cfgLockFallback = d.lockFallback
         if (typeof d.background === "string") root.lockBackground = d.background
         var b = parseInt(d.blur)
         if (!isNaN(b)) root.lockBlur = Math.max(0, Math.min(128, b))

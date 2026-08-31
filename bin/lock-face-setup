@@ -41,23 +41,56 @@ With no arguments, prints this help.
 USAGE
 }
 
-check_prereqs() {
-  local missing=0
+# Both come from the AUR, so they are built on this machine rather than
+# downloaded. Offer to install them instead of stopping with an instruction.
+install_missing_packages() {
+  local -a want=()
 
   # /usr/lib/security/howdy is drw------- (root only), so an unprivileged test
   # on anything inside it fails even when howdy is installed. Check the package
   # and the /usr/bin/howdy symlink, both of which are readable.
-  if ! pacman -Qq howdy >/dev/null 2>&1 && [[ ! -e /usr/bin/howdy ]]; then
-    err "howdy is not installed"
-    echo "     Install it with: omarchy pkg aur add howdy"
-    missing=1
+  pacman -Qq howdy >/dev/null 2>&1 || [[ -e /usr/bin/howdy ]] || want+=(howdy)
+  [[ -f /usr/lib/security/pam_python.so ]] || want+=(pam-python)
+
+  (( ${#want[@]} )) || return 0
+
+  echo
+  warn "Face unlock needs: ${want[*]}"
+  echo "  Both are AUR packages, so they are compiled here. That can take a"
+  echo "  while, and howdy pulls in dlib and OpenCV."
+  echo
+  read -r -p "Install them now? [y/N] " reply
+  if [[ ${reply,,} != y && ${reply,,} != yes ]]; then
+    echo
+    echo "  Install them yourself with:"
+    echo "      omarchy pkg aur add ${want[*]}"
+    return 1
   fi
 
-  if [[ ! -f /usr/lib/security/pam_python.so ]]; then
-    err "pam-python is not installed"
-    echo "     howdy's PAM module needs it: omarchy pkg aur add pam-python"
-    missing=1
+  echo
+  if ! omarchy pkg aur add "${want[@]}"; then
+    echo
+    err "Package installation failed. Nothing else was changed."
+    return 1
   fi
+
+  # Re-check: a build can report success and still not land what we need.
+  local -a still=()
+  pacman -Qq howdy >/dev/null 2>&1 || [[ -e /usr/bin/howdy ]] || still+=(howdy)
+  [[ -f /usr/lib/security/pam_python.so ]] || still+=(pam-python)
+  if (( ${#still[@]} )); then
+    err "Still missing after the install: ${still[*]}"
+    return 1
+  fi
+
+  ok "Installed ${want[*]}"
+  return 0
+}
+
+check_prereqs() {
+  local missing=0
+
+  install_missing_packages || missing=1
 
   if [[ ! -e /dev/v4l/ir-camera ]]; then
     err "no IR camera found at /dev/v4l/ir-camera"
@@ -66,11 +99,42 @@ check_prereqs() {
     missing=1
   fi
 
-  # The models live in the same root-only directory, so this cannot be checked
-  # without a password. Say what is needed rather than prompting for one here.
+  (( missing )) && return $missing
+
+  # The models are root-only, so enrollment cannot be checked without a
+  # password. Ask instead: `howdy list` is cheap and prints nothing useful to
+  # anyone but the owner.
   echo
-  echo "  This needs a face enrolled for $USER. If you have not done that yet:"
-  echo "      sudo howdy -U $USER add"
+  local enrolled="unknown"
+  if sudo -n true 2>/dev/null; then
+    # A cached credential means the answer is trustworthy.
+    if sudo -n howdy -U "$USER" list >/dev/null 2>&1; then enrolled=yes; else enrolled=no; fi
+  fi
+
+  if [[ $enrolled == yes ]]; then
+    ok "A face is already enrolled for $USER"
+  elif [[ $enrolled == unknown ]]; then
+    echo "  Face unlock needs a face enrolled for $USER. If you have not done"
+    echo "  that yet, run:  sudo howdy -U $USER add"
+  else
+    warn "No face is enrolled for $USER yet"
+    echo "  Enrolling takes a few seconds: look at the camera when prompted."
+    echo
+    read -r -p "Enrol one now? [y/N] " reply
+    if [[ ${reply,,} == y || ${reply,,} == yes ]]; then
+      echo
+      if ! sudo howdy -U "$USER" add; then
+        err "Enrollment did not complete."
+        echo "  Try again later with: sudo howdy -U $USER add"
+        return 1
+      fi
+      ok "Face enrolled"
+    else
+      echo
+      echo "  Face unlock will do nothing until you run:"
+      echo "      sudo howdy -U $USER add"
+    fi
+  fi
 
   return $missing
 }
