@@ -77,6 +77,15 @@ Item {
     if (lockScreenFallback.length > 0 && screenExists(lockScreenFallback)) return lockScreenFallback
     return screens[0].name
   }
+
+  // Which output actually shows the interface. Outputs arrive and vanish in
+  // bursts on a lid open/close (resolution and scale renegotiate several
+  // times), and activeLockScreen recomputes on every one of those. Binding
+  // showInterface straight to activeLockScreen made LockView tear down and
+  // rebuild its whole tree — clock, weather, battery, blurred background —
+  // once per intermediate screen state, which read as stutter. Only adopt a
+  // new value once screenSettleTimer says the burst is over.
+  property string resolvedLockScreen: ""
   property int lockBlur: 64
   property bool cfgShowWeather: true
   property bool cfgShowDate: true
@@ -204,6 +213,7 @@ Item {
   // than on whichever screen happens to be first.
   function captureLockScreen() {
     if (!focusedScreenProc.running) focusedScreenProc.running = true
+    resolvedLockScreen = activeLockScreen
   }
 
   function beginLock() {
@@ -407,7 +417,7 @@ Item {
       // is the fallback when that is unknown.
       readonly property bool primary:
         root.cfgLockDisplay === "all" ? true
-          : (screen && screen.name === root.activeLockScreen)
+          : (screen && screen.name === root.resolvedLockScreen)
 
       LockView {
         id: lockView
