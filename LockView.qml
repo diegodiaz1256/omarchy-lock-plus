@@ -37,6 +37,10 @@ Item {
   property bool loadBackground: true
   property string passwordText: ""
   property bool syncingPasswordText: false
+  // On battery, the gaussian blur shader stays a steady per-frame GPU cost
+  // for as long as the password screen is up. Trim the radius and skip
+  // animating it so the throttled GPU isn't asked to ramp a heavy effect.
+  property bool onBattery: false
 
   readonly property string placeholderText: "Enter Password"
   readonly property int fieldWidth: 381
@@ -134,9 +138,14 @@ Item {
       blurEnabled: root.loadBackground && wallpaper.status === Image.Ready && root.backgroundBlur > 0
       // Ramps from sharp to the configured radius as the idle face gives way,
       // so the clock stays legible and the password field gets the focus.
+      // Skipped on battery: animating a full-screen gaussian blur is a
+      // steady per-frame GPU cost a throttled chip pays for 320ms straight.
       blur: root.showIdleFace ? 0.0 : 1.0
-      Behavior on blur { NumberAnimation { duration: 320; easing.type: Easing.OutQuad } }
-      blurMax: root.backgroundBlur
+      Behavior on blur {
+        enabled: !root.onBattery
+        NumberAnimation { duration: 320; easing.type: Easing.OutQuad }
+      }
+      blurMax: root.onBattery ? Math.round(root.backgroundBlur * 0.5) : root.backgroundBlur
       blurMultiplier: 1.25
       contrast: -0.08
     }

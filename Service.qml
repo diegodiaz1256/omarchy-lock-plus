@@ -47,6 +47,9 @@ Item {
   property string weatherLocation: ""
   property int batteryPercent: -1
   property string batteryState: ""
+  // "Discharging" means running off the battery. Used to trim GPU/CPU work
+  // (blur, retry cadence) regardless of whether the battery readout is shown.
+  readonly property bool onBattery: batteryState === "Discharging"
   property string networkName: ""
   property string networkType: ""
   property string lockBackground: ""
@@ -427,6 +430,7 @@ Item {
         networkType: root.networkType
         showHint: root.cfgShowHint
         backgroundBlur: root.lockBlur
+        onBattery: root.onBattery
         fingerprintScanning: root.fingerprintAuthenticating
         faceScanning: root.faceAuthenticating
         fingerprintMessage: root.fingerprintMessage
@@ -719,8 +723,10 @@ Item {
   }
 
   Timer {
+    // Runs whether or not the readout is shown: onBattery gates blur cost and
+    // fingerprint retry cadence, not just the status row.
     interval: 30000
-    running: root.cfgShowBattery || root.cfgShowNetwork
+    running: root.lockRequested
     repeat: true
     triggeredOnStart: true
     onTriggered: if (!statusProc.running) statusProc.running = true
