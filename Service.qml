@@ -53,6 +53,7 @@ Item {
   property string networkName: ""
   property string networkType: ""
   property string lockBackground: ""
+  property string avatarPath: ""
   property string sessionBackgroundPath: ""
   // Output that should carry the lock interface, captured when locking starts.
   property string lockScreenName: ""
@@ -430,6 +431,8 @@ Item {
         fingerprintConfigured: root.fingerprintConfigured
         fingerprintArmed: root.fingerprintArmed
         showIdleFace: root.idleFaceVisible
+        userName: root.userName
+        avatarPath: root.avatarPath
         weatherIcon: root.cfgShowWeather ? root.weatherIcon : ""
         weatherTemperature: root.cfgShowWeather ? root.weatherTemperature : ""
         weatherLocation: root.cfgShowWeather ? root.weatherLocation : ""
@@ -801,6 +804,7 @@ Item {
           root.cfgLockDisplay = d.lockDisplay
         if (typeof d.lockFallback === "string") root.cfgLockFallback = d.lockFallback
         if (typeof d.background === "string") root.lockBackground = d.background
+        if (typeof d.avatarPath === "string") root.avatarPath = d.avatarPath
         var b = parseInt(d.blur)
         if (!isNaN(b)) root.lockBlur = Math.max(0, Math.min(128, b))
       } catch (e) {

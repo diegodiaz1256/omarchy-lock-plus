@@ -41,8 +41,14 @@ Item {
   // for as long as the password screen is up. Trim the radius and skip
   // animating it so the throttled GPU isn't asked to ramp a heavy effect.
   property bool onBattery: false
+  property string userName: ""
+  // Empty until the settings panel points at a picture; the initial letter
+  // is the fallback, not a placeholder that has to be replaced.
+  property string avatarPath: ""
 
   readonly property string placeholderText: "Enter Password"
+  readonly property string displayName:
+    userName.length > 0 ? userName.charAt(0).toUpperCase() + userName.slice(1) : ""
   readonly property int fieldWidth: 381
   readonly property int fieldHeight: 67
   readonly property int outlineThickness: 3
@@ -198,7 +204,7 @@ Item {
       width: Math.min(toastLabel.implicitWidth + 34, root.width - 80)
       height: toastLabel.implicitHeight + 20
       anchors.horizontalCenter: parent.horizontalCenter
-      anchors.bottom: inputField.top
+      anchors.bottom: userBadge.visible ? userBadge.top : inputField.top
       anchors.bottomMargin: 20
       radius: Style.cornerRadius
       color: Color.lock.background
@@ -288,6 +294,88 @@ Item {
           NumberAnimation { to: 1.09; duration: 900; easing.type: Easing.InOutQuad }
           NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutQuad }
         }
+      }
+    }
+
+    // Avatar and name anchor the field to a person rather than a bare box
+    // floating on the wallpaper — the same role hyprlock's user line plays.
+    Column {
+      id: userBadge
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.bottom: inputField.top
+      anchors.bottomMargin: 28
+      spacing: 14
+      visible: root.showInterface && (opacity > 0) && root.displayName.length > 0
+      opacity: root.showIdleFace ? 0 : 1
+      Behavior on opacity { NumberAnimation { duration: 260; easing.type: Easing.OutQuad } }
+
+      Rectangle {
+        id: avatarRing
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: 92
+        height: 92
+        radius: width / 2
+        // Solid rather than the field's translucent fill: sitting straight on
+        // a blurred wallpaper, a 1px border on a near-transparent disc read as
+        // barely there. This needs to hold its own against any background.
+        color: Qt.rgba(0, 0, 0, 0.55)
+        border.width: 2
+        border.color: Color.lock.borderActive
+
+        Image {
+          id: avatarImage
+          anchors.fill: parent
+          anchors.margins: 2
+          visible: false
+          source: root.avatarPath.length > 0 ? root.fileUrl(root.avatarPath) : ""
+          fillMode: Image.PreserveAspectCrop
+          asynchronous: true
+          cache: false
+          sourceSize.width: 88
+          sourceSize.height: 88
+        }
+
+        MultiEffect {
+          anchors.fill: avatarImage
+          source: avatarImage
+          visible: root.avatarPath.length > 0 && avatarImage.status === Image.Ready
+          maskEnabled: true
+          maskSource: avatarMask
+        }
+
+        Item {
+          id: avatarMask
+          width: avatarImage.width
+          height: avatarImage.height
+          layer.enabled: true
+          visible: false
+          Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+          }
+        }
+
+        Text {
+          anchors.centerIn: parent
+          visible: root.avatarPath.length === 0 || avatarImage.status !== Image.Ready
+          text: root.displayName.charAt(0)
+          color: Color.lock.text
+          font.family: Style.font.family
+          font.pixelSize: 38
+          font.bold: true
+        }
+      }
+
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: root.displayName
+        color: Color.lock.text
+        opacity: 0.95
+        font.family: Style.font.family
+        font.pixelSize: Style.font.heading
+        font.bold: true
+        style: Text.Outline
+        styleColor: Qt.rgba(0, 0, 0, 0.45)
       }
     }
 
@@ -416,6 +504,21 @@ Item {
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
       }
+    }
+
+    Text {
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.top: inputField.bottom
+      anchors.topMargin: 18
+      text: "Press Enter to unlock"
+      color: Color.lock.placeholder
+      font.family: Style.font.family
+      font.pixelSize: Math.round(Style.font.body * 0.92)
+      visible: root.showInterface && (opacity > 0)
+      // Only worth saying once there's something to submit.
+      opacity: (!root.showIdleFace && root.passwordText.length > 0
+                && !root.authenticatingPassword) ? 0.75 : 0
+      Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
     }
   }
 }
