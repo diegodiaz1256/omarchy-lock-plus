@@ -110,6 +110,16 @@ Item {
   property string lastEventAt: ""
   property bool strandedLock: false
   property bool strandedLockResolved: false
+  // Stranded-lock recovery exists to catch a lock orphaned by a shell restart,
+  // and only makes sense before this shell has ever taken a lock of its own.
+  // onScreensChanged and the PAM FileView both re-arm the check for the whole
+  // life of the process (screen topology and PAM config can both legitimately
+  // change later), and one of those firing while a real lock was already mid-
+  // handshake raced recoverStrandedLock() against it and wedged both -- lock
+  // state stuck pending forever, requiring a TTY switch to recover. Once a
+  // real lock has ever gone secure, there is nothing left to strand: latch
+  // this and refuse to run the recovery path again for good.
+  property bool everLocked: false
 
   readonly property bool locked: lockRequested || sessionLock.locked || sessionLock.secure
   readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating
@@ -157,7 +167,7 @@ Item {
   // a session locked this early is an orphan behind Hyprland's failsafe. Outputs
   // are often still absent here, so ask until the answer means something.
   function checkStrandedLock() {
-    if (strandedLockResolved || strandedLockCheckProc.running) return
+    if (everLocked || strandedLockResolved || strandedLockCheckProc.running) return
 
     // A lock this shell took is nobody's orphan.
     if (locked || lockRequested) {
@@ -169,7 +179,7 @@ Item {
   }
 
   function recoverStrandedLock() {
-    if (!strandedLock || locked || !passwordPamConfigured) return
+    if (everLocked || !strandedLock || locked || !passwordPamConfigured) return
 
     strandedLock = false
     logEvent("lock-stranded: recovering")
@@ -236,6 +246,7 @@ Item {
 
     resetAuthenticationState()
     lockRequested = true
+    everLocked = true
     armBlankTimer()
     checkIdleTriggeredLock()
     logEvent("lock-requested")
@@ -286,6 +297,13 @@ Item {
 
   function runBlank() {
     if (!blankProcess.running) blankProcess.running = true
+    // A plain DPMS-off/on never produces the wall-clock gap resumeWatch looks
+    // for -- it is not a suspend, just the panel going dark -- so without this
+    // the swallow-first-keystroke guard in armFingerprint() never arms, and
+    // the very key that wakes the display also dismisses the idle face in the
+    // same press. From the user's side a self-initiated blank reads the same
+    // as any other "was dark, now waking": arm the guard here too.
+    resumeGuardUntil = Date.now() + resumeGraceMs
   }
 
   function submitPassword(value) {
@@ -393,6 +411,7 @@ Item {
     onSecureStateChanged: {
       root.logEvent("secure=" + secure)
       if (secure) {
+        root.everLocked = true
         resumeWatch.lastTick = Date.now()
         root.pendingSessionLock = false
         sessionLockStabilizeTimer.stop()
