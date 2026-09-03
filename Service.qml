@@ -217,6 +217,16 @@ Item {
     resolvedLockScreen = activeLockScreen
   }
 
+  // The idle daemon locks after the screen has already gone through its idle
+  // cycle (screensaver, possibly dimmed). Our lock surface has to map bright
+  // regardless, but there is no reason to hold it there for a fresh 30s grace
+  // as if the user had just walked up — that reads as "waking up just to show
+  // the lock screen". Ask the idle service whether this lock followed an idle
+  // cycle and, if so, blank again immediately instead of re-arming the grace.
+  function checkIdleTriggeredLock() {
+    if (!idleStatusProc.running) idleStatusProc.running = true
+  }
+
   function beginLock() {
     captureLockScreen()
     if (!passwordPamConfigured) {
@@ -227,6 +237,7 @@ Item {
     resetAuthenticationState()
     lockRequested = true
     armBlankTimer()
+    checkIdleTriggeredLock()
     logEvent("lock-requested")
     queueSessionLock()
 
@@ -847,6 +858,33 @@ Item {
   Process {
     id: blankProcess
     command: ["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"]
+  }
+
+  Process {
+    id: idleStatusProc
+    // "lastEvent" is set to "lock-system" the instant the idle daemon's own
+    // lock timer fires, right before it runs omarchy-system-lock -- so seeing
+    // it here means this lock followed the idle cycle rather than a manual
+    // super+L. screensaverStarted covers the same case if the log line races
+    // ahead of us.
+    command: ["bash", "-c", "omarchy-shell idle status 2>/dev/null"]
+    stdout: StdioCollector {
+      id: idleStatusStdout
+      waitForEnd: true
+      onStreamFinished: {
+        var idleTriggered = false
+        try {
+          var status = JSON.parse(String(idleStatusStdout.text || ""))
+          idleTriggered = !!status.screensaverStarted
+            || String(status.lastEvent || "").indexOf("lock-system") === 0
+        } catch (e) {}
+        if (idleTriggered && root.lockRequested && !root.authenticatingPassword) {
+          logEvent("lock-requested: idle-triggered, skipping wake grace")
+          idleBlankTimer.stop()
+          root.runBlank()
+        }
+      }
+    }
   }
 
   Timer {
