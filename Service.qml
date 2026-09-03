@@ -983,7 +983,14 @@ Item {
 
     function lock(): string {
       if (!root.passwordPamConfigured) return "missing-pam"
-      if (!root.locked && !root.beginLock()) return "failed"
+      // Gate on lockRequested, not root.locked: root.locked also follows
+      // sessionLock.secure, and that has been observed to stay stuck true
+      // after a real unlock when the compositor drops the secure=false
+      // transition. Trusting it here would silently skip beginLock() on the
+      // next idle lock -- no fresh blank timer gets armed, and whatever lock
+      // surface is left over (real or orphaned) just sits lit indefinitely.
+      // lockRequested is ours alone and always reset by finishUnlock().
+      if (!root.lockRequested && !root.beginLock()) return "failed"
       return "ok"
     }
 
