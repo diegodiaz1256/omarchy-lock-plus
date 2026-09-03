@@ -862,27 +862,20 @@ Item {
 
   Process {
     id: idleStatusProc
-    // "lastEvent" is set to "lock-system" the instant the idle daemon's own
-    // lock timer fires, right before it runs omarchy-system-lock -- so seeing
-    // it here means this lock followed the idle cycle rather than a manual
-    // super+L. screensaverStarted covers the same case if the log line races
-    // ahead of us.
-    command: ["bash", "-c", "omarchy-shell idle status 2>/dev/null"]
-    stdout: StdioCollector {
-      id: idleStatusStdout
-      waitForEnd: true
-      onStreamFinished: {
-        var idleTriggered = false
-        try {
-          var status = JSON.parse(String(idleStatusStdout.text || ""))
-          idleTriggered = !!status.screensaverStarted
-            || String(status.lastEvent || "").indexOf("lock-system") === 0
-        } catch (e) {}
-        if (idleTriggered && root.lockRequested && !root.authenticatingPassword) {
-          logEvent("lock-requested: idle-triggered, skipping wake grace")
-          idleBlankTimer.stop()
-          root.runBlank()
-        }
+    // omarchy-system-lock calls our lock IPC *before* it pkills the
+    // screensaver, so at the instant beginLock() runs, the screensaver
+    // process is still alive if (and only if) the idle daemon is what
+    // triggered this lock -- a manual super+L never started one. A plain
+    // pgrep here resolves in a couple ms; querying "omarchy-shell idle
+    // status" instead was tried first, but that round-trips through its own
+    // quickshell IPC client and consistently lost the race against the
+    // pkill that follows a few lines later, so it never saw the trigger.
+    command: ["bash", "-c", "pgrep -x ttfx >/dev/null || pgrep -f '[o]rg.omarchy.screensaver' >/dev/null"]
+    onExited: function(exitCode) {
+      if (exitCode === 0 && root.lockRequested && !root.authenticatingPassword) {
+        logEvent("lock-requested: idle-triggered, skipping wake grace")
+        idleBlankTimer.stop()
+        root.runBlank()
       }
     }
   }
