@@ -183,7 +183,7 @@ Item {
 
     strandedLock = false
     logEvent("lock-stranded: recovering")
-    beginLock()
+    beginLock(false)
   }
 
   function refreshBackground() {
@@ -231,13 +231,13 @@ Item {
   // cycle (screensaver, possibly dimmed). Our lock surface has to map bright
   // regardless, but there is no reason to hold it there for a fresh 30s grace
   // as if the user had just walked up — that reads as "waking up just to show
-  // the lock screen". Ask the idle service whether this lock followed an idle
-  // cycle and, if so, blank again immediately instead of re-arming the grace.
-  function checkIdleTriggeredLock() {
-    if (!idleStatusProc.running) idleStatusProc.running = true
-  }
-
-  function beginLock() {
+  // the lock screen". idleTriggered is passed by the caller (see the IPC
+  // handler below) rather than guessed here: an earlier version tried to
+  // infer it by pgrep-ing for the screensaver process at lock time, but that
+  // process's lifetime is too short and racy to catch reliably -- it missed
+  // often enough that the fast path silently failed to fire more often than
+  // it worked. A caller-supplied flag can't race.
+  function beginLock(idleTriggered) {
     captureLockScreen()
     if (!passwordPamConfigured) {
       logEvent("lock-denied: missing-pam")
@@ -247,8 +247,13 @@ Item {
     resetAuthenticationState()
     lockRequested = true
     everLocked = true
-    armBlankTimer()
-    checkIdleTriggeredLock()
+    if (idleTriggered) {
+      logEvent("lock-requested: idle-triggered, skipping wake grace")
+      idleBlankTimer.stop()
+      runBlank()
+    } else {
+      armBlankTimer()
+    }
     logEvent("lock-requested")
     queueSessionLock()
 
@@ -879,25 +884,6 @@ Item {
     command: ["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"]
   }
 
-  Process {
-    id: idleStatusProc
-    // omarchy-system-lock calls our lock IPC *before* it pkills the
-    // screensaver, so at the instant beginLock() runs, the screensaver
-    // process is still alive if (and only if) the idle daemon is what
-    // triggered this lock -- a manual super+L never started one. A plain
-    // pgrep here resolves in a couple ms; querying "omarchy-shell idle
-    // status" instead was tried first, but that round-trips through its own
-    // quickshell IPC client and consistently lost the race against the
-    // pkill that follows a few lines later, so it never saw the trigger.
-    command: ["bash", "-c", "pgrep -x ttfx >/dev/null || pgrep -f '[o]rg.omarchy.screensaver' >/dev/null"]
-    onExited: function(exitCode) {
-      if (exitCode === 0 && root.lockRequested && !root.authenticatingPassword) {
-        logEvent("lock-requested: idle-triggered, skipping wake grace")
-        idleBlankTimer.stop()
-        root.runBlank()
-      }
-    }
-  }
 
   Timer {
     id: idleBlankTimer
@@ -1000,8 +986,15 @@ Item {
   IpcHandler {
     target: "lock"
 
-    function lock(): string {
+    // `source` distinguishes an idle-daemon lock from a manual one (super+L,
+    // the system menu, a stranded-lock recovery) so beginLock() knows whether
+    // to skip the wake grace without guessing from process state. Passed as
+    // "idle" by the idle daemon's own omarchy-system-lock call (patched
+    // locally -- see the plugin's omarchy-system-lock-idle wrapper); any
+    // other value, including no argument at all, is treated as manual.
+    function lock(source: string): string {
       if (!root.passwordPamConfigured) return "missing-pam"
+      var idleTriggered = source === "idle"
       // Gate on lockRequested, not root.locked: root.locked also follows
       // sessionLock.secure, and that has been observed to stay stuck true
       // after a real unlock when the compositor drops the secure=false
@@ -1009,7 +1002,18 @@ Item {
       // next idle lock -- no fresh blank timer gets armed, and whatever lock
       // surface is left over (real or orphaned) just sits lit indefinitely.
       // lockRequested is ours alone and always reset by finishUnlock().
-      if (!root.lockRequested && !root.beginLock()) return "failed"
+      if (!root.lockRequested) {
+        if (!root.beginLock(idleTriggered)) return "failed"
+      } else if (!root.authenticatingPassword) {
+        // The idle daemon never stops watching for idle once locked, so it
+        // re-runs its whole screensaver+lock cycle every idle interval on
+        // top of an already-locked session -- this IPC call lands again
+        // each time, harmlessly ignored above. Whatever in that repeated
+        // cycle might be re-waking the display, a defensive re-blank here
+        // costs nothing and undoes it either way.
+        logEvent("lock-requested: redundant, re-blanking defensively")
+        root.runBlank()
+      }
       return "ok"
     }
 
