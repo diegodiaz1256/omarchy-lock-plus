@@ -99,6 +99,14 @@ Item {
   // match"), surfaced so a touch is not silently ignored.
   property string fingerprintMessage: ""
   property bool fingerprintRejected: false
+  // A crashed/wedged fingerprint daemon fails every verify instantly, no
+  // touch involved, which the 250ms retry timer would otherwise hammer
+  // forever -- a known trigger for libfprint-egismoc's task_ssm assertion
+  // crash (TenSeventy7/libfprint-egismoc-sdcp#13). Give up quietly after a
+  // run of failures with no PAM prompt in between, rather than adding load
+  // to a sensor that is not going to recover on its own this lock cycle.
+  property int fingerprintFailStreak: 0
+  readonly property int fingerprintFailStreakLimit: 5
   property bool previewVisible: false
   property string enteredPassword: ""
   property string pendingPassword: ""
@@ -211,6 +219,7 @@ Item {
     idleFaceVisible = true
     fingerprintMessage = ""
     fingerprintRejected = false
+    fingerprintFailStreak = 0
     fingerprintRejectTimer.stop()
     failureClearTimer.stop()
     authenticatingPassword = false
@@ -402,8 +411,16 @@ Item {
 
     if (!lockRequested) return
     if (result === PamResult.Success) {
+      fingerprintFailStreak = 0
       finishUnlock()
     } else if (fingerprintConfigured) {
+      fingerprintFailStreak += 1
+      if (fingerprintFailStreak >= fingerprintFailStreakLimit) {
+        logEvent("fingerprint-giving-up: " + fingerprintFailStreak + " failures with no device response")
+        fingerprintMessage = "Fingerprint unavailable"
+        fingerprintMessageTimer.stop()
+        return
+      }
       fingerprintRetryTimer.restart()
     }
   }
@@ -561,6 +578,10 @@ Item {
       if (!root.lockRequested || !root.fingerprintArmed) return
       var text = String(fingerprintPam.message || "").trim()
       if (text.length === 0) return
+      // A real prompt means the daemon actually engaged the sensor this
+      // time, not an instant service-unavailable bounce -- safe to keep
+      // retrying.
+      root.fingerprintFailStreak = 0
       root.fingerprintMessage = text
       fingerprintMessageTimer.restart()
       if (fingerprintPam.messageIsError) {
@@ -575,6 +596,13 @@ Item {
 
     onError: function(error) {
       root.fingerprintAuthenticating = false
+      root.fingerprintFailStreak += 1
+      if (root.fingerprintFailStreak >= root.fingerprintFailStreakLimit) {
+        root.logEvent("fingerprint-giving-up: " + root.fingerprintFailStreak + " failures with no device response")
+        root.fingerprintMessage = "Fingerprint unavailable"
+        fingerprintMessageTimer.stop()
+        return
+      }
       if (root.lockRequested && root.fingerprintConfigured) fingerprintRetryTimer.restart()
     }
   }
