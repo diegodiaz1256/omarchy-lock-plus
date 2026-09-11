@@ -35,6 +35,15 @@ Item {
   // so the clock is actually shown before the password field takes over.
   property double resumeGuardUntil: 0
   readonly property int resumeGraceMs: 900
+  // True while we have DPMS off. The idle face otherwise keeps animating at
+  // the panel regardless: the clock ticks once a second and the hint pulses
+  // on an infinite loop, so the lock surface asks the compositor for frames
+  // it draws to a dark screen. hyprlock stops requesting frames entirely once
+  // nothing needs redrawing; this is the equivalent for a QML lock surface.
+  // Purely a cost saving. It was written while chasing a display that wakes
+  // itself ~30s into a blanked lock, and it does not fix that -- the wake
+  // still happens with every animation on this surface stopped.
+  property bool displayBlanked: false
   // Settings owned by the zeroge.lockface panel. Defaults here match its
   // Config.js, so the lock behaves sanely before the file exists.
   property bool cfgFingerprintEnabled: true
@@ -317,11 +326,13 @@ Item {
   onLockBackgroundChanged: applyBackground()
 
   function runWake() {
+    displayBlanked = false
     if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
   }
 
   function runBlank() {
+    displayBlanked = true
     if (!blankProcess.running) blankProcess.running = true
     // A plain DPMS-off/on never produces the wall-clock gap resumeWatch looks
     // for -- it is not a suspend, just the panel going dark -- so without this
@@ -495,6 +506,7 @@ Item {
         fingerprintConfigured: root.fingerprintConfigured
         fingerprintArmed: root.fingerprintArmed
         showIdleFace: root.idleFaceVisible
+        displayBlanked: root.displayBlanked
         userName: root.userName
         avatarPath: root.avatarPath
         weatherIcon: root.cfgShowWeather ? root.weatherIcon : ""

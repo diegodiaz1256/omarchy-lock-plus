@@ -14,6 +14,9 @@ Item {
   property string temperature: ""
   property string locationName: ""
   property bool showDate: true
+  // The panel is off. Nothing here should keep asking the compositor for
+  // frames it will draw to a dark screen.
+  property bool displayBlanked: false
   property int batteryPercent: -1
   property string batteryState: ""
   property string networkName: ""
@@ -153,6 +156,7 @@ Item {
     font.family: Style.font.family
     font.pixelSize: Style.font.body
     SequentialAnimation on opacity {
+      running: !root.displayBlanked
       loops: Animation.Infinite
       NumberAnimation { to: 0.25; duration: 1800; easing.type: Easing.InOutQuad }
       NumberAnimation { to: 0.6; duration: 1800; easing.type: Easing.InOutQuad }
@@ -166,7 +170,7 @@ Item {
 
   Timer {
     interval: 1000
-    running: root.visible
+    running: root.visible && !root.displayBlanked
     repeat: true
     onTriggered: tick.now = new Date()
   }

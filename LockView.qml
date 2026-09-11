@@ -19,6 +19,9 @@ Item {
   // Until the user touches anything, the lock shows the idle face rather
   // than a password box demanding input.
   property bool showIdleFace: true
+  // The panel is switched off: nothing on this surface should keep animating,
+  // since every frame it asks for is drawn to a dark screen.
+  property bool displayBlanked: false
   property string weatherIcon: ""
   property string weatherTemperature: ""
   property string weatherLocation: ""
@@ -170,6 +173,7 @@ Item {
 
     IdleFace {
       anchors.fill: parent
+      displayBlanked: root.displayBlanked
       weatherIcon: root.weatherIcon
       temperature: root.weatherTemperature
       locationName: root.weatherLocation
