@@ -198,7 +198,19 @@ Item {
     if (!readlinkProc.running) readlinkProc.running = true
   }
 
-  function refreshFingerprintStatus() {
+  // fprintd DBus-activates on the very first fprintd-list call, regardless
+  // of cfgFingerprintEnabled -- the probe only asks whether a finger is
+  // enrolled, so it spun the daemon up on every single lock even with
+  // fingerprint unlock switched off, and the daemon then idle-exited 30s
+  // later. Enrollment cannot change mid-session, so probe once and reuse the
+  // answer; force a re-probe only where it could plausibly have changed (the
+  // settings panel's preview button). Cheaper, and it stops handing a driver
+  // with a known open/close crash bug (libfprint-egismoc) an extra
+  // claim/release cycle per lock for no reason.
+  property bool fingerprintStatusChecked: false
+
+  function refreshFingerprintStatus(force) {
+    if (fingerprintStatusChecked && !force) return
     if (!fingerprintCheckProc.running) fingerprintCheckProc.running = true
   }
 
@@ -882,6 +894,7 @@ Item {
     stdout: StdioCollector { id: fingerprintCheckStdout; waitForEnd: true }
     onExited: {
       root.fingerprintConfigured = String(fingerprintCheckStdout.text || "").trim() === "yes"
+      root.fingerprintStatusChecked = true
       if (root.lockRequested && root.fingerprintConfigured) root.startFingerprint()
       else if (!root.fingerprintConfigured && fingerprintPam.active) fingerprintPam.abort()
     }
@@ -1067,7 +1080,9 @@ Item {
 
     function preview(): string {
       root.refreshBackground()
-      root.refreshFingerprintStatus()
+      // Forced: the settings panel is the one place where the user may have
+      // just enrolled or removed a finger and expects the preview to match.
+      root.refreshFingerprintStatus(true)
       root.previewVisible = true
       return "ok"
     }
