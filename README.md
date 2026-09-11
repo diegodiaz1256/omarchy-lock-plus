@@ -124,6 +124,30 @@ the driver re-pairs. Upstream issue:
 
 If your reader is reliable, skip it.
 
+### Idle-lock refinements
+
+Two small improvements to `/usr/bin/omarchy-system-lock`, both optional. The
+lock screen works without them; they only affect how an idle lock looks.
+
+```bash
+~/.config/omarchy/plugins/zeroge.lock/bin/lock-system-lock-patch --apply
+```
+
+The script tells the lock screen when a lock came from the idle daemon rather
+than from you, so it can skip the wake grace instead of holding the panel lit
+as if you had just sat down. It also waits for the lock surface to report
+secure before killing the screensaver, rather than killing it immediately and
+exposing the desktop for the rest of the handshake.
+
+An Omarchy package update replaces that script and silently drops both, so
+re-run the command after upgrading. `--check` reports the current state and
+`--revert` restores the backup it takes on every apply.
+
+This does not close the gap entirely: the desktop is still briefly visible
+between the lock request and `secure=true`. That needs a fix in the lock
+surface itself, tracked upstream as
+[omarchy#9184](https://github.com/omacom-io/omarchy/issues/9184).
+
 ## Settings
 
 Stored in `~/.config/omarchy/lockface.json`, written by the panel:

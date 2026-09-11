@@ -1,0 +1,158 @@
+#!/bin/bash
+# lock-system-lock-patch — re-apply this plugin's two local changes to
+# /usr/bin/omarchy-system-lock. An Omarchy package update overwrites that
+# script with the stock version and silently drops both, so this exists to
+# put them back without hand-editing a root-owned file.
+#
+# The patch is generated from whatever the stock script currently is, not
+# restored from a stored copy, so unrelated upstream changes to the script
+# are preserved.
+#
+# Neither change is required for the lock screen to work. The plugin's IPC
+# accepts the stock call shape on its own; these only improve the idle path.
+
+set -euo pipefail
+
+TARGET=/usr/bin/omarchy-system-lock
+
+# Declared at top level: the EXIT trap fires in the shell's scope, not the
+# function's, so a function-local name would be unset by the time it runs.
+tmp=""
+trap 'rm -f "$tmp"' EXIT
+
+bold() { printf '\033[1m%s\033[0m\n' "$1"; }
+ok()   { printf '\033[32m%s\033[0m\n' "$1"; }
+warn() { printf '\033[33m%s\033[0m\n' "$1" >&2; }
+err()  { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+
+usage() {
+  cat <<'USAGE'
+Usage: lock-system-lock-patch [--check|--apply|--revert]
+
+  --check   report whether the patch is currently applied (default)
+  --apply   apply the patch, backing up the current script first
+  --revert  restore the most recent backup
+
+What it changes:
+
+  1. Pass the lock source through. The idle daemon calls the script with
+     --idle, which reaches the lock screen as lockWithSource("idle") and
+     lets it skip the wake grace. Without this every lock looks manual, so
+     an idle lock holds the panel lit for the full grace period as if you
+     had just walked up to the machine.
+
+  2. Wait for the lock surface to report secure before killing the
+     screensaver. The stock script kills it immediately, which drops back
+     to the bare desktop for the rest of the session-lock handshake.
+     Bounded at roughly two seconds so a stalled shell cannot hang the lock.
+
+Note that change 2 does not close the whole gap. The desktop is still
+briefly visible between the lock request and secure=true; that is an
+upstream issue (omacom/omarchy#9184) and needs a fix in the lock surface
+itself, not here.
+USAGE
+}
+
+is_patched() {
+  grep -q 'lock-system-lock-patch' "$TARGET" 2>/dev/null
+}
+
+require_stock() {
+  if ! grep -q 'omarchy-shell lock lock' "$TARGET" 2>/dev/null; then
+    err "$TARGET does not look like the script this patch expects."
+    err "Refusing to touch it. Inspect it by hand."
+    exit 1
+  fi
+}
+
+do_check() {
+  if [[ ! -f $TARGET ]]; then
+    err "$TARGET does not exist."
+    exit 1
+  fi
+  if is_patched; then
+    ok "Patch is applied."
+  else
+    warn "Patch is NOT applied (stock script)."
+    echo "Run: $0 --apply"
+  fi
+}
+
+do_apply() {
+  if is_patched; then
+    ok "Already patched, nothing to do."
+    return 0
+  fi
+
+  require_stock
+
+  local backup
+  backup="${TARGET}.stock.$(date +%Y%m%d%H%M%S)"
+  tmp="$(mktemp)"
+
+  # Rewrite the IPC call, then insert the secure-wait just before the
+  # screensaver teardown. Both anchors are matched literally so an upstream
+  # rewording fails loudly here rather than producing a half-patched script.
+  awk '
+    /^omarchy-shell lock lock >\/dev\/null$/ {
+      print "# lock-system-lock-patch: pass the lock source through, so an idle"
+      print "# lock can skip the wake grace. See the plugin'\''s bin/ directory."
+      print "source=\"manual\""
+      print "[[ ${1:-} == \"--idle\" ]] && source=\"idle\""
+      print ""
+      print "omarchy-shell lock lockWithSource \"$source\" >/dev/null"
+      next
+    }
+    /^# Avoid running screensaver when locked$/ {
+      print "# lock-system-lock-patch: wait for the lock surface to be secure"
+      print "# before killing the screensaver, so the teardown does not expose"
+      print "# the bare desktop mid-handshake. Bounded at ~2s."
+      print "for _ in $(seq 1 40); do"
+      print "  secure=$(omarchy-shell lock status 2>/dev/null | jq -r '\''.secure // false'\'' 2>/dev/null)"
+      print "  [[ $secure == \"true\" ]] && break"
+      print "  sleep 0.05"
+      print "done"
+      print ""
+    }
+    { print }
+  ' "$TARGET" > "$tmp"
+
+  if ! grep -q 'lockWithSource' "$tmp" || ! grep -q 'seq 1 40' "$tmp"; then
+    err "Patch did not apply cleanly: the script's wording has changed."
+    err "Nothing was written. Update this script's anchors."
+    exit 1
+  fi
+
+  if ! bash -n "$tmp"; then
+    err "Patched script failed a syntax check. Nothing was written."
+    exit 1
+  fi
+
+  bold "This needs root to write $TARGET."
+  sudo cp -a "$TARGET" "$backup"
+  sudo install -m 755 "$tmp" "$TARGET"
+
+  ok "Patched. Backup of the previous script: $backup"
+}
+
+do_revert() {
+  local backup
+  backup="$(ls -1t "${TARGET}".stock.* 2>/dev/null | head -1 || true)"
+  if [[ -z $backup ]]; then
+    err "No backup found (looked for ${TARGET}.stock.*)."
+    err "Reinstall the package instead: sudo pacman -S omarchy"
+    exit 1
+  fi
+
+  bold "This needs root to write $TARGET."
+  sudo install -m 755 "$backup" "$TARGET"
+  ok "Restored from $backup"
+}
+
+case "${1:---check}" in
+  --check) do_check ;;
+  --apply) do_apply ;;
+  --revert) do_revert ;;
+  -h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
