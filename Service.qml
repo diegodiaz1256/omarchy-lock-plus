@@ -1039,13 +1039,17 @@ Item {
   IpcHandler {
     target: "lock"
 
-    // `source` distinguishes an idle-daemon lock from a manual one (super+L,
-    // the system menu, a stranded-lock recovery) so beginLock() knows whether
-    // to skip the wake grace without guessing from process state. Passed as
-    // "idle" by the idle daemon's own omarchy-system-lock call (patched
-    // locally -- see the plugin's omarchy-system-lock-idle wrapper); any
-    // other value, including no argument at all, is treated as manual.
-    function lock(source: string): string {
+    // `source` distinguishes an idle-daemon lock from a manual one (the lock
+    // keybinding, the system menu, a stranded-lock recovery) so beginLock()
+    // knows whether to skip the wake grace without guessing from process
+    // state. Passed as "idle" by the idle daemon's patched call; any other
+    // value is treated as manual.
+    //
+    // Kept optional on purpose. Stock omarchy-system-lock calls this with no
+    // argument, and a package update restores that script, so a required
+    // parameter turns every update into a silently broken lock: the IPC call
+    // fails with "Too few arguments provided" and nothing locks at all.
+    function lockWithSource(source: string): string {
       if (!root.passwordPamConfigured) return "missing-pam"
       var idleTriggered = source === "idle"
       // Gate on lockRequested, not root.locked: root.locked also follows
@@ -1068,6 +1072,14 @@ Item {
         root.runBlank()
       }
       return "ok"
+    }
+
+    // What stock omarchy-system-lock calls: `omarchy-shell lock lock`, no
+    // argument. Kept as its own zero-argument function because Quickshell's
+    // IPC types every parameter and rejects the call outright when one is
+    // missing, so there is no way to give `source` a default.
+    function lock(): string {
+      return lockWithSource("manual")
     }
 
     function isLocked(): string {
