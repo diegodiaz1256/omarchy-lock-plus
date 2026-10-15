@@ -44,6 +44,12 @@ Item {
   // itself ~30s into a blanked lock, and it does not fix that -- the wake
   // still happens with every animation on this surface stopped.
   property bool displayBlanked: false
+  // `omarchy-brightness-keyboard off` saves the current backlight level and
+  // then sets 0, and the wake restores whatever was saved. A blank on top of
+  // an already-dark keyboard would save that 0 over the real level, and the
+  // next unlock would restore the keyboard to off. Only the first blank after
+  // a wake may save; later ones just hold it dark.
+  property bool keyboardLevelSaved: false
   // Settings owned by the zeroge.lockface panel. Defaults here match its
   // Config.js, so the lock behaves sanely before the file exists.
   property bool cfgFingerprintEnabled: true
@@ -327,13 +333,18 @@ Item {
 
   function runWake() {
     displayBlanked = false
+    keyboardLevelSaved = false
     if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
   }
 
   function runBlank() {
     displayBlanked = true
-    if (!blankProcess.running) blankProcess.running = true
+    if (!blankProcess.running) {
+      blankProcess.command = keyboardLevelSaved ? blankHoldCommand : blankSaveCommand
+      keyboardLevelSaved = true
+      blankProcess.running = true
+    }
     // A plain DPMS-off/on never produces the wall-clock gap resumeWatch looks
     // for -- it is not a suspend, just the panel going dark -- so without this
     // the swallow-first-keystroke guard in armFingerprint() never arms, and
@@ -932,9 +943,16 @@ Item {
     command: ["bash", "-c", "omarchy-system-wake"]
   }
 
+  readonly property var blankSaveCommand:
+    ["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"]
+  // Same as above without brightnessctl's save, so the level stored by the
+  // first blank survives every re-blank until the wake restores it.
+  readonly property var blankHoldCommand:
+    ["bash", "-c", "for d in /sys/class/leds/*kbd_backlight*; do [[ -e $d ]] && brightnessctl -qd \"${d##*/}\" set 0; break; done; omarchy-brightness-display off"]
+
   Process {
     id: blankProcess
-    command: ["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"]
+    command: root.blankSaveCommand
   }
 
 
