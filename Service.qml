@@ -333,8 +333,14 @@ Item {
 
   function runWake() {
     displayBlanked = false
+    if (!wakeProcess.running) {
+      // Restore only a level this lock saved. A lock dismissed before it ever
+      // blanked has nothing saved, and restoring would load whatever stale
+      // level an earlier blank left behind, usually 0.
+      wakeProcess.command = keyboardLevelSaved ? wakeRestoreCommand : wakeKeepCommand
+      wakeProcess.running = true
+    }
     keyboardLevelSaved = false
-    if (!wakeProcess.running) wakeProcess.running = true
     if (lockRequested) armBlankTimer()
   }
 
@@ -938,9 +944,14 @@ Item {
     }
   }
 
+  readonly property var wakeRestoreCommand: ["bash", "-c", "omarchy-system-wake"]
+  // omarchy-system-wake without its keyboard restore.
+  readonly property var wakeKeepCommand:
+    ["bash", "-c", "omarchy-brightness-display on; omarchy-hyprland-monitor-clamshell >/dev/null 2>&1 || true"]
+
   Process {
     id: wakeProcess
-    command: ["bash", "-c", "omarchy-system-wake"]
+    command: root.wakeRestoreCommand
   }
 
   readonly property var blankSaveCommand:
